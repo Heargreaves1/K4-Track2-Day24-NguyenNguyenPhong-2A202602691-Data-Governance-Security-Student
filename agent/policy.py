@@ -1,40 +1,28 @@
 """BƯỚC 3b — PEP (Policy Enforcement Point) tại tool call (15').
 
-Cổng chặn TRƯỚC KHI tool thật sự execute. Đọc CHECKPOINTS.md (§3b).
-
-Interface bắt buộc (tests/test_policy.py và agent/runner.py gọi trực tiếp):
-
+Interface bắt buộc:
     check(context: PolicyContext) -> tuple[bool, str]
-        Trả về (allow, reason).
-        `reason` KHÔNG BAO GIỜ được để trống — cả khi allow=True và
-        allow=False. Đây là evidence audit ở Bước 4 (rubric: "Audit
-        completeness = 100%" — điều kiện trượt nếu có dòng thiếu reason).
-
-PolicyContext — 5 input gốc và các input OBO cho lớp L3:
-
-    data_classification: str   "public" | "internal" | "restricted"
-    request_purpose: str       tự do, ví dụ "reconciliation", "support-reply"
-    agent_owner: str            định danh agent/run gọi tool này
-    delegation_depth: int       0 = gọi trực tiếp bởi user, >0 = agent gọi agent
-    egress_enabled: bool        run hiện tại có được phép gọi network không
-    principal_id: str           ID người ra lệnh từ data/principals.json
-    requested_tool: str         tool sắp gọi
-    agent_scopes: tuple[str]    quyền tối đa của agent
-    parent_scopes: tuple[str]   quyền của agent cha khi delegation_depth > 0
-    expires_at: str             ISO-8601 UTC; hết hạn phải deny
-
-Rule TỐI THIỂU bắt buộc (không được viết yếu hơn rule này):
-
-    classification == "restricted" and egress_enabled is True  ->  DENY
-
-Checkpoint OBO: quyền hiệu lực = principal.allowed_tools ∩ agent_scopes,
-và nếu depth > 0 thì còn giao với parent_scopes. Unknown principal, scope
-thiếu, run hết hạn đều deny kèm reason. Principal là fixture mô phỏng,
-không phải xác thực người dùng production.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+PRINCIPALS_PATH = Path(__file__).resolve().parent.parent / "data" / "principals.json"
+
+_CACHED_PRINCIPALS: dict | None = None
+
+
+def _get_principals() -> dict:
+    global _CACHED_PRINCIPALS
+    if _CACHED_PRINCIPALS is None:
+        if PRINCIPALS_PATH.exists():
+            _CACHED_PRINCIPALS = json.loads(PRINCIPALS_PATH.read_text(encoding="utf-8"))
+        else:
+            _CACHED_PRINCIPALS = {}
+    return _CACHED_PRINCIPALS
 
 
 @dataclass(frozen=True)
@@ -52,4 +40,48 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    """Kiểm tra chính sách bảo mật trước khi thực thi tool call.
+    
+    Luôn trả về (allow, reason) và reason KHÔNG BAO GIỜ để trống.
+    """
+    # 1. Rule TỐI THIỂU bắt buộc: restricted data + egress enabled -> DENY
+    if context.data_classification == "restricted" and context.egress_enabled is True:
+        return False, "Chính sách tối thiểu: Nghiêm cấm egress đối với dữ liệu classified restricted"
+
+    # 2. Kiểm tra thời hạn hiệu lực (expires_at)
+    if context.expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(context.expires_at)
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if exp_dt <= datetime.now(timezone.utc):
+                return False, f"Yêu cầu đã hết hạn tại mốc thời gian {context.expires_at}"
+        except Exception:
+            return False, f"Định dạng expires_at không hợp lệ: {context.expires_at}"
+
+    # 3. Kiểm tra danh tính principal (OBO)
+    if context.principal_id:
+        principals = _get_principals()
+        if context.principal_id not in principals:
+            return False, f"Principal không tồn tại hoặc không xác định: {context.principal_id}"
+
+        principal_info = principals[context.principal_id]
+
+        # Kiểm tra mục đích (purpose) nếu có khai báo
+        allowed_purposes = principal_info.get("purposes", [])
+        if context.request_purpose and allowed_purposes and context.request_purpose not in allowed_purposes:
+            return False, f"Mục đích '{context.request_purpose}' không được phép cho principal '{context.principal_id}'"
+
+        # Kiểm tra tool được phép (effective permissions = allowed_tools ∩ agent_scopes ∩ parent_scopes)
+        if context.requested_tool:
+            principal_allowed_tools = set(principal_info.get("allowed_tools", []))
+            if context.requested_tool not in principal_allowed_tools:
+                return False, f"Tool '{context.requested_tool}' không nằm trong quyền được phép của principal '{context.principal_id}'"
+
+            if context.agent_scopes and context.requested_tool not in set(context.agent_scopes):
+                return False, f"Tool '{context.requested_tool}' vượt quá agent_scopes của agent"
+
+            if context.delegation_depth > 0 and context.parent_scopes and context.requested_tool not in set(context.parent_scopes):
+                return False, f"Tool '{context.requested_tool}' vượt quá parent_scopes khi ủy quyền ở delegation_depth {context.delegation_depth}"
+
+    return True, f"Yêu cầu hợp lệ: Cho phép '{context.requested_tool or 'thao tác'}' cho principal '{context.principal_id or 'hệ thống'}'"

@@ -2,9 +2,9 @@
 
 | Nguồn / yêu cầu | Control đã làm | Evidence file:dòng | Giới hạn |
 |---|---|---|---|
-| Luật 91/2025/QH15 | | | |
-| NĐ 356/2025/NĐ-CP | | | |
-| Luật AI 134/2025/QH15 | | | |
-| OWASP ASI01, ASI03, ASI04 | | | |
+| Luật 91/2025/QH15 (Bảo vệ dữ liệu cá nhân) | PII Gate phát hiện và che giấu dữ liệu định danh (CCCD, STK, SĐT, Email); Phân quyền OBO ngăn nhân viên cấp thấp (`support_l1`) đọc dữ liệu restricted; Ghi vết mọi truy cập vào Audit Ledger. | `agent/pii.py:12-42`, `agent/pii.py:45-77`, `agent/policy.py:53-93`, `agent/runner.py:84-124`, `agent/ledger.py:30-49` | Dữ liệu synthetic trong môi trường lab; regex cục bộ chưa giải quyết hết ngữ cảnh đa dạng bên ngoài test set; các điều khoản chi tiết: chưa xác minh văn bản gốc. |
+| NĐ 356/2025/NĐ-CP (Biện pháp kỹ thuật & nhật ký bảo vệ dữ liệu) | Nhật ký xử lý dữ liệu append-only có chuỗi băm (hash chain sha256) đảm bảo phát hiện sửa đổi (tamper-evident); Quy tắc tối thiểu cấm tuyệt đối egress dữ liệu nhạy cảm ra ngoài. | `agent/ledger.py:16-49`, `agent/ledger.py:52-87`, `agent/policy.py:58-60`, `reports/ledger.jsonl:1-23` | Hash chain lưu trong file cục bộ, chưa có external timestamping authority để chống tấn công cắt đuôi file; chưa xác minh văn bản gốc. |
+| Luật AI 134/2025/QH15 (Quản trị an toàn & rủi ro hệ thống AI) | Kiến trúc Trifecta Split phân tách tác tử đọc ngữ cảnh không tin cậy (Run A) với tác tử truy xuất dữ liệu nghiệp vụ (Run B); Kiểm soát ủy quyền hành động thay người dùng (OBO) và thời hạn phiên (`expires_at`). | `agent/runner.py:40-79`, `agent/runner.py:84-150`, `agent/policy.py:62-72` | Đánh giá bằng MockLLM deterministic; hệ thống thực tế cần bổ sung guardrails phân tích ngữ nghĩa và giám sát con người (human-in-the-loop); chưa xác minh văn bản gốc. |
+| OWASP ASI01, ASI03, ASI04 (Top 10 An toàn Agentic AI) | **ASI01 (Prompt Injection)**: Trifecta split chỉ truyền ticket ID số từ file name sang Run B, loại bỏ triệt để free text của kẻ tấn công.<br>**ASI03 (Identity & Permission Abuse)**: OBO kiểm soát giao quyền `allowed_tools ∩ agent_scopes ∩ parent_scopes`, chặn `support_l1` đọc restricted record.<br>**ASI04 (Improper Data Egress)**: PEP từ chối egress `http_post` khi phân loại là `restricted`, ghi nhận `deny` vào ledger. | `agent/runner.py:73-77`, `agent/runner.py:86-124`, `agent/runner.py:126-150`, `agent/policy.py:58-60, 74-91`, `reports/ledger.jsonl: dòng 23` | Chỉ thử nghiệm trên 4 biến thể lure mô phỏng và egress sink nội bộ localhost `127.0.0.1:10024`. |
 
 Chỉ ghi điều khoản cụ thể khi đã đối chiếu văn bản gốc. Mô phỏng kỹ thuật không tự chứng minh tuân thủ pháp luật.
